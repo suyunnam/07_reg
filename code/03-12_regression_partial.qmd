@@ -70,7 +70,9 @@ library(metrica) # for rmse
 Reading data and doing some light wrangling.  
 ```{r}
 #| message: false
-reg_dfw 
+reg_dfw <- read_csv("../data/reg.csv") %>%
+  clean_names() %>%
+  mutate(rep = factor(rep))
 
 reg_dfw
 ```
@@ -94,6 +96,10 @@ summary(reg_dfw)
 Yield ranging from 7.8 to 15.6 Mg/ha.  
 
 ```{r reg exp boxplot}
+ggplot(reg_dfw,
+       aes(x=sr_ksha,
+           y=yield_mgha)) +
+  geom_boxplot()
 
 ```
 
@@ -102,7 +108,9 @@ What is going on with this boxplot?
 ```{r reg plot point + smooth}
 ggplot(reg_dfw, 
        aes(x = sr_ksha, 
-           y = yield_mgha))
+           y = yield_mgha)) +
+  geom_point() +
+  geom_smooth()
 
 ```
 
@@ -117,7 +125,8 @@ Our goal is to then use that model to estimate the optimum seeding rate for this
 options(contrasts = c("contr.sum", "contr.poly"))
 
 # Model fitting
-mod1_int 
+mod1_int <- lmer(yield_mgha ~ (1|rep),
+                 data=reg_dfw)
 
 # Summary
 summary(mod1_int)
@@ -192,7 +201,9 @@ ggplot(mod1_int_aug,
        aes(x = sr_ksha, 
            y = yield_mgha))+
   geom_point(size = 3, 
-             alpha = .7)
+             alpha = .7) +
+  geom_line(aes(y=.fixed))
+
 ```
 
 Problem with the plot above:  
@@ -203,14 +214,19 @@ Solution:
 
 First, let's create an data set with all levels of seeding rate we want to get a prediction.  
 ```{r nd}
-nd 
+nd <- data.frame(sr_ksha = seq(40, 120, 1))
 
 nd
 ```
 
 ```{r mod1 better final plot}
 # Creating predictions
-nd 
+nd <- nd %>%
+  mutate(mod1_yield_mgha = predict(mod1_int,
+                                   nd,
+                                   re.form = NA
+                                   ))
+  
 # Creating function to bootstrap
 predict.fun <- function(mod) {
   predict(mod, 
@@ -242,7 +258,14 @@ ggplot(reg_dfw,
              alpha = .7)+
   geom_line(data = nd, 
             aes(y = mod1_yield_mgha), 
-            color = "forestgreen")
+            color = "forestgreen") +
+  geom_ribbon(data=nd,
+              aes(ymin=mod1_int_lcl,
+                  ymax=mod1_int_upl,
+                  y= mod1_yield_mgha),
+              fill="gray",
+              alpha=0.5)
+
 ```
 
 Linear thoughts:
@@ -259,7 +282,8 @@ Next, let's try a linear (intercept + slope) model.
 options(contrasts = c("contr.sum", "contr.poly"))
 
 # Model fitting
-mod2_lin 
+mod2_lin <- lmer(yield_mgha ~ (1|rep) + sr_ksha,
+                 data = reg_dfw)
 
 # Summary
 summary(mod2_lin)
@@ -273,7 +297,6 @@ mod2_lin_aug <- augment(mod2_lin) %>%
   mutate(.stdresid = resid(mod2_lin, 
                            type = "pearson", 
                            scaled = T))
-
 
 mod2_lin_aug
 ```
@@ -331,7 +354,9 @@ ggplot(mod2_lin_aug,
        aes(x = sr_ksha, 
            y = yield_mgha))+
   geom_point(size = 3, 
-             alpha = .7)
+             alpha = .7) + 
+  geom_line(aes(y= .fixed),
+            color = "blue")
 ```
 
 Problem with the plot above:  
@@ -388,7 +413,8 @@ ggplot(reg_dfw,
 options(contrasts = c("contr.sum", "contr.poly"))
 
 # Model fitting
-mod3_quad 
+mod3_quad <- lmer(yield_mgha ~ (1|rep) + sr_ksha + I(sr_ksha^2),
+                  data = reg_dfw)
 
 # Summary
 summary(mod3_quad)
@@ -401,7 +427,6 @@ mod3_quad_aug <- augment(mod3_quad) %>%
   mutate(.stdresid = resid(mod3_quad, 
                            type = "pearson", 
                            scaled = T))
-
 
 mod3_quad_aug
 ```
@@ -487,6 +512,7 @@ nd <- nd %>%
   mutate(mod3_yield_mgha = predict(mod3_quad, 
                                    nd, 
                                    re.form = NA))
+nd
 
 # Bootstrapping
 mod3_quad_boots <- bootMer(mod3_quad, 
@@ -518,8 +544,6 @@ ggplot(reg_dfw,
               alpha = 0.5, 
               inherit.aes = FALSE)
 
-
-
 ```
 
 Now, which one fits the data best?
@@ -541,8 +565,13 @@ After that, we can choose the model that best fit our data and use it to extract
 # Changing to sum-to-zero contrast
 options(contrasts = c("contr.sum", "contr.poly"))
 
-# Model fitting
-mod4_linp 
+# Model fitting (nlme is needed for non-linear & mixed model)
+mod4_linp <- nlme(yield_mgha ~ SSlinp(sr_ksha, a, b, xs),
+                  data = reg_dfw,
+                  random = list(rep = pdDiag(a + b + xs ~ 1)),
+                  fixed = list(a ~ 1, b ~ 1, xs ~ 1),
+                  start = c(a = 0, b = 0.3, xs = 100)   # Provide initial parameter guesses
+                  )                                     # The model will iterate and find the better and accurate value
 
 # Summary
 summary(mod4_linp)
@@ -586,12 +615,14 @@ Looking good.
 On this plot, looking for normality.
 
 ```{r mod4 QQ plot for Rep random effect}
-mod4_linp_randeff 
+mod4_linp_randeff <- ranef(mod4_linp) %>%
+  as.data.frame()
 
 ggplot(mod4_linp_randeff, 
        aes(sample = estimate))+
   stat_qq()+
-  stat_qq_line() 
+  stat_qq_line() +
+  facet_wrap(~term)
 
 ```
 b and xs random estimates are so small that seem to be all zero.  
@@ -633,7 +664,7 @@ nd <- nd %>%
   mutate(mod4_yield_mgha = predict(mod4_linp, 
                                    nd, 
                                    level = 0))  
-
+nd
 # Non-linear prediction function  
 predict.fun.nl <- function(x) predict(x,
                            newdata = nd,
@@ -678,12 +709,38 @@ ggplot(reg_dfw,
 ## a) Visual comparison
 ```{r comparison plot}
 ggplot(reg_dfw, aes(x = sr_ksha, y = yield_mgha))+
-  geom_point(size = 4, alpha = .6)
+  geom_point(size = 4, alpha = .6) +
+  geom_line(data = nd,
+             aes(y=mod1_yield_mgha),
+             color = "forestgreen",
+             size = 1.5) +
+  
+  geom_line(data = nd,
+             aes(y=mod2_yield_mgha),
+             color = "blue",
+             size = 1.5) +
+  
+  geom_line(data = nd,
+             aes(y=mod3_yield_mgha),
+             color = "purple",
+             size = 1.5) +
+  
+  geom_line(data = nd,
+             aes(y=mod4_yield_mgha),
+             color = "orange",
+             size = 1.5)
 
 
 ```
 ## Table comparison  
 ```{r}
+IC_tab(mod1_int,
+       mod2_lin,
+       mod3_quad,
+       mod4_linp)
+
+# AICc is more conservative than AIC. 
+# dAIC will show the best model as 0, and others are compared to that one
 
 ```
 Based on the above, model 4 (linear-plateau) had the lowest AIC and thus should be used to find the optimum level of seeding rate.  
@@ -692,24 +749,36 @@ Based on the above, model 4 (linear-plateau) had the lowest AIC and thus should 
 Because our best model was the linear-plateau, let's find its seeding rate that optimized yield.  
 
 ```{r optimum SR}
-
+mod4_linp %>%
+  intervals(which = "fixed")
 
 ```
 Based on the linear-plateau model, the level of seeding rate to optimize corn grain yield in this study was **73.47** thousand seeds/ha.  
 
 Now let's predict what was the yield at that seeding rate.  
 ```{r yield at optimum SR}
-
+predict(mod4_linp,
+        newdata = data.frame(sr_ksha = 73.48),
+        level = 0) # do not specify block. we want to know general y value at specific x value
 
 ```
-At the optimum seeding rate of **73.47** thousand seeds/ha, corn grain yield was **13.45** Mg/ha.
+At the optimum seeding rate of **73.48** thousand seeds/ha, corn grain yield was **13.45** Mg/ha.
 
 ```{r final plot}
 ggplot(reg_dfw, aes(x = sr_ksha, y = yield_mgha))+
   geom_point(size = 4, alpha = .6)+
   geom_line(data = nd, aes(y = mod4_yield_mgha), 
             color = "orange",
-            size = 1.5) 
+            size = 1.5) +
+  geom_segment(x = 73.48,
+               xend = 73.48,
+               y = 13.45,
+               yend = 0) +
+  
+  geom_segment(x = 73.48,
+               xend = 0,
+               y = 13.45,
+               yend = 13.45)
 
 ```
 # 9) Take-home  
@@ -720,5 +789,120 @@ ggplot(reg_dfw, aes(x = sr_ksha, y = yield_mgha))+
 
 -   Always check residuals! p-values alone do not tell you whether model is adequate for your data!
 
+# 10) Extra - Bootstrapping
+Bootstrapping is a statistical procedure that **re-samples a single data set** to create many simulated samples
 
+The goal of bootstrapping is estimating **confidence intervals**
+
+Bootstrapping is best suited where the original data have been generated through **random sampling** from a population
+
+Bootstrapping is also referred to as **sampling with replacement**. So for ex., if you initial sample has 10 observations, bootsrapping will take a total of 10 samples on each run, where:
+
+- takes the first sample (say, row 3)
+- takes the second sample (say, row 5)
+- takes the third sample (say, row 1)
+- takes the fourth sample (say, row 3 again)
+- ...
+- takes the 10th sample (say, row 4) (this is the end of the first sampling run)
+
+And do this subsampling more than 1000 times, for research purposes
+
+Notice how row 3 apeared twice in the first sampling run. This is what "with replacement" means: you don't exclude a given row from being sampled again just because it was already sampled.
+
+## Marble bag and corn yield
+In experimentation, the data we collect is just a sample from the larger population of potential data.
+
+In our example of yield in this exercise, we collected **20 total observations**.
+
+There observations are one realization of an infinite set of possible realizations (image, for ex., if you had sampled just to the side of the corn row, or maybe a different corn row, or maybe a slightly different site in the farm).
+
+Normally, we make inference on our sample only.
+
+With bootstrap, we can create many potential samples based on the single one we collected (the individual resamples on the far right of the figure).
+
+In the example below
+ - **Population** would be our infinite potential data from a population
+ - **Sample** is what we collect from that (i.e., out yield data)
+ - **Resample** are the different sampling runs with replacement (bootstrapping) from our original sample
+ 
+Each sample has the **same number of observations** as the original sample, with replacement.
+
+## Creating a bootstrapped confidence interval for the yield data
+First, let's generate 10,000 resamples (with replacement) from the yield data we've been working with.
+
+```{r}
+#install.packages("infer")
+library(infer)
+
+boot <- reg_dfw %>%
+  specify(response = yield_mgha) %>%
+  generate(reps = 10000,
+           type = "bootstrap")
+
+
+boot
+
+```
+
+How many rows do we have above? why?
+200,000 = 20 (sample number) X 10,000 (times of resampling)
+
+Let's inspect the first bootstrapped sampled (i.e., replicate column):
+
+```{r}
+boot %>%
+  filter(replicate == 1) %>%
+  arrange(yield_mgha)
+```
+
+What do you see? Any repeated values?
+
+Now, let's calculate the mean for each bootstrapped sample.
+
+```{r}
+boot_mean <- boot %>%
+  calculate(stat="mean")
+
+boot_mean
+```
+How many rows? Why is that?
+10,000. as many times as we re-sampled.
+
+Now, let's calculated the 2.5% and 98.7% quantiles of the mean distribution. There will be the limits of our confidence interval.
+
+
+```{r}
+boot_ci <- boot_mean %>%
+  summarise(lower = quantile(stat, 0.025), upper = quantile(stat, 0.975)) %>%
+  pivot_longer(cols=everything())
+
+boot_ci
+```
+
+
+Finally, let's visualize the mean and CI.
+```{r}
+ggplot(data = boot_mean,
+       aes(x = stat)
+       ) +
+  geom_density() + 
+  geom_rug() +
+  geom_vline(data = boot_ci,
+             aes(xintercept = value))
+
+
+```
+## Interpretation
+Confidence interval is the **range of plausible values for our parameter of interest**
+
+Confidence intervals are often misinterpreted as probability...
+
+How do we interpret this?
+A) There is a 95% probability the true mean corn yield is between 11.2 and 13 Mg/ha.
+
+B) There is a 95% probability the mean corn yield is between 11.2 and 13 Mg/ha.
+
+**C) We are 95% confident the true mean corn yield is between 11.2 and 13 Mg/ha.**
+
+D) We are 95% confident the corn yield is between 11.2 and 13 Mg/ha
 
